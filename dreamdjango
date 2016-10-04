@@ -1,32 +1,150 @@
-# dreamdjango
-A shell script that automates the installation of Python 3 on a Dreamhost shared-hosting account and the subsequent installation of Django under a virtual environment.
+#! /bin/bash
 
-# COMPATIBILITY
-
-The script has currently only been tested for the following versions of Python and Django:
-Python 3.5.2
-Django 1.10.1 (installed via pip)
-
-There is no reason why the script wouldn't work for other versions of Python and the corresponding versions of Django that are compatible (this can be achieve by selecting customer installation when prompted).
+#This script has only been tested for Python 3.5.2
+#This script is inteded for installing a new version of Python 3 on a Dreamhost share-hosted domain
+#Please don't forget to chmod +x this script!
 
 
-# DESCRIPTION
+version=3.5.2
+ver=${version::-2}
+domain=""
+venv=env
+project=dreamproject
 
 
-This script performs several tasks in the following order:
+GetDomain () {
+    echo Please enter the domain name:
+    read domain
+}
 
-1. Instllation of the default version of Python, or one that is nominated by the user, to ~/opt/python-version
-2. Setup of a virtual envrionment at ~/domain/venvs/projectname
-3. Installaiton of Django under the virtual environment
-4. Creation of the folders and files necessary for Passenger to recognise the project and function correctly
+CustomInstallation () {
+    echo Please specify the version of Python to be installed
+    read version
+
+    echo Please specify the name the the virtual environment:
+    echo This will be created in the $domain folder by default
+    read venv
+
+    echo Please specify the name of the Django project:
+    read project
+}
 
 
-# PREREQUISITES AND INSTALLATION
+#===========================#
+#===1. Install New Python===#
+#===========================#
+
+InstallPython () {
+    #Download and extract the version of Python specified:
+    wget https://www.python.org/ftp/python/$version/Python-$version.tgz
+    tar xvf Python-$version.tgz
+
+    #Clean up the tarball:
+    rm Python-$version.tgz
+
+    #Change into the Python folder and configure with prefix flag for installation
+    cd Python-$version
+    ./configure --prefix=$HOME/opt/python-$version
+
+    #Make and install
+    make && make install
+
+    #Clean up the extracted Python folder
+    cd ~/
+    rm -rf Python-$version
+
+    #Modify .bash_profile
+    echo "PATH=$HOME/opt/python-$version/bin:$PATH" >> ~/.bash_profile
+}
+
+#===========================#
+#===2. Install Virtualenv===#
+#===========================#
+
+InstallVirtualenv() {
+    pip3 install virtualenv
+}
+
+#=======================#
+#===3. Install Django===#
+#=======================#
+
+InstallDjango () {
+    mkdir ~/$domain/$venv
+    virtualenv ~/$domain/$venv/$project
+
+    source ~/$domain/$venv/$project/bin/activate
+
+    #Install Django
+    pip3 install django
+
+    #Start a Django project with the project name specified
+    cd ~/$domain/
+    python3 ~/$domain/$venv/$project/bin/django-admin.py startproject $project
+
+    #Setup static folder for the Django project
+    mkdir ~/$domain/public/static
+
+    #Modify settings.py of the Django project to include STATIC_ROOT
+    echo "STATIC_ROOT = os.path.dirname(BASE_DIR) + '/public/static/'" >> ~/$domain/$project/$project/settings.py
+
+    #Run collectstatic for Django
+    python3 ~/$domain/$project/manage.py collectstatic
+}
+
+#========================#
+#===4. Setup Passenger===#
+#========================#
+
+SetupPassenger () {
+    mkdir ~/$domain/tmp
+    touch ~/$domain/tmp/restart.txt .
+
+#Create Passenger WSGI File
+cat >~/$domain/passenger_wsgi.py <<-EOL
+import sys, os
+
+cwd = os.getcwd()
+sys.path.append(cwd)
+sys.path.append(cwd + '/$project')
+
+INTERP = os.path.expanduser("~/$domain/$venv/$project/bin/python")
+
+if sys.executable != INTERP: os.execl(INTERP, INTERP, *sys.argv)
+
+sys.path.insert(0,'~/$domain/$venv/$project/bin')
+sys.path.insert(0,'~/$domain/$venv/$project/lib/python$ver/site-packages')
+
+os.environ['DJANGO_SETTINGS_MODULE'] = '$project.settings'
+from django.core.wsgi import get_wsgi_application
+application = get_wsgi_application()
+EOL
+}
 
 
-To use this script, it is assumed that you have already set up a domain with Passenger enabled and that you have SSH access to the server hosting this domain.  Please consult the Dreamhost knowledge base (https://help.dreamhost.com) if you have not already done so.
 
-PLEASE NOTE THAT THE SCRIPT REMOVES quickstart.html IN THE ~/domain/public FOLDER! MAKE SURE THAT A BACKUP COPY IS CREATED IF YOU WISH TO KEEP A COPY OF IT FOR ANY REASON.
+#==========#
+#===MAIN===#
+#==========#
 
-Simply copy this script to any folder on the server, give it execute permission and run the script (source); then follow the prompt and let it do its thing! Once installation has finished, browser to the domain you have specified in during installation and you should be greeted by the Django welcome message.
+GetDomain
 
+echo By default Python 3.5.2 and the latest release of Django will be installed.
+echo The virtual environment will be installed to ~/$domain/$venv
+echo and hte Django project will be
+
+read -p "Perform a custom installation? (Yes, No)" customise
+case $customise in
+    Yes|yes) CustomInstallation ;;
+    No|no) echo "" ;;
+    *) exit ;;
+esac
+
+InstallPython
+InstallVirtualenv
+InstallDjango
+SetupPassenger
+
+rm ~/$domain/public/quickstart.html
+touch ~/$domain/tmp/restart.txt
+cd ~/$domain
